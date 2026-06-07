@@ -4,6 +4,8 @@ import {
   ScrollView, ActivityIndicator, Alert, Modal
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
 import { account, databases, APPWRITE_CONFIG } from '../../config/appwrite';
 import { ID, Query } from 'appwrite';
 
@@ -174,49 +176,86 @@ export default function BulkUploadScreen({ onBack }) {
 
   // CSV/Excel File pick చేయి
   const handlePickFile = async () => {
-  try {
-    const result = await DocumentPicker.getDocumentAsync({
-      type: '*/*',
-      copyToCacheDirectory: true,
-    });
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+      });
 
-    if (result.canceled) return;
+      if (result.canceled) return;
 
-    const file = result.assets[0];
-    console.log('File picked:', file.name);
-    setFileName(file.name);
-    setLoading(true);
+      const file = result.assets[0];
+      console.log('File picked:', file.name);
+      setFileName(file.name);
+      setLoading(true);
 
-    // fetch తో directly చదువు
-    const response = await fetch(file.uri);
-    let content = await response.text();
+      // fetch తో directly చదువు
+      const response = await fetch(file.uri);
+      let content = await response.text();
 
-    if (!content || content.trim().length === 0) {
-      throw new Error('File empty గా ఉంది!');
+      if (!content || content.trim().length === 0) {
+        throw new Error('File empty గా ఉంది!');
+      }
+
+      // BOM తీసేయి
+      content = content.replace(/^\uFEFF/, '');
+      content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+      console.log('Content length:', content.length);
+
+      const parsed = parseCSV(content);
+      console.log('Parsed rows:', parsed.length, parsed);
+
+      if (parsed.length === 0) {
+        throw new Error('Data rows కనిపించలేదు!');
+      }
+
+      setCsvData([...parsed]); // ← spread operator వాడు — re-render force చేయి
+      setLoading(false);
+
+    } catch (e) {
+      setLoading(false);
+      console.log('File error:', e.message);
+      Alert.alert('❌ Error', e.message);
     }
+  };
 
-    // BOM తీసేయి
-    content = content.replace(/^\uFEFF/, '');
-    content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Template Download & Share చేయి
+  const handleDownloadTemplate = async () => {
+    try {
+      const templateContent = `student_name,student_email,class_section,parent_name,parent_email,parent_phone
+Rahul Kumar,rahul@school.com,10-A,Ravi Kumar,ravi.kumar@gmail.com,9876543210
+Priya Sharma,priya@school.com,10-A,Sunita Sharma,sunita.sharma@gmail.com,9876543211
+Arjun Reddy,arjun@school.com,10-B,Suresh Reddy,suresh.reddy@gmail.com,9876543212
+Swathi Nayak,swathi@school.com,10-B,,,
+Kiran Babu,kiran@school.com,10-C,Lakshmi Babu,lakshmi.babu@gmail.com,9876543214`;
 
-    console.log('Content length:', content.length);
+      const fileUri = FileSystem.documentDirectory + 'vidyasetu_students_template.csv';
 
-    const parsed = parseCSV(content);
-    console.log('Parsed rows:', parsed.length, parsed);
+      await FileSystem.writeAsStringAsync(fileUri, templateContent, {
+        encoding: 'utf8',
+      });
 
-    if (parsed.length === 0) {
-      throw new Error('Data rows కనిపించలేదు!');
+      console.log('Template saved to:', fileUri);
+
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/csv',
+          dialogTitle: 'VidyaSetu Student Template',
+          UTI: 'public.comma-separated-values-text',
+        });
+      } else {
+        Alert.alert(
+          'Share Available కాదు',
+          `File ఇక్కడ save అయింది:\n${fileUri}`
+        );
+      }
+    } catch (e) {
+      console.log('Template error:', e.message);
+      Alert.alert('Error', e.message);
     }
-
-    setCsvData([...parsed]); // ← spread operator వాడు — re-render force చేయి
-    setLoading(false);
-
-  } catch (e) {
-    setLoading(false);
-    console.log('File error:', e.message);
-    Alert.alert('❌ Error', e.message);
-  }
-};
+  };
 
   // Bulk Import చేయి
   const handleImport = async () => {
@@ -417,15 +456,6 @@ export default function BulkUploadScreen({ onBack }) {
     setFileName('');
   };
 
-  // CSV Template download చేయి (preview గా చూపించు)
-  const showTemplate = () => {
-    Alert.alert(
-      '📋 CSV Template Format',
-      `Header row ఇలా ఉండాలి:\n\nstudent_name,student_email,class_section,parent_name,parent_email,parent_phone\n\nExample:\nరాహుల్,rahul@s.com,10-A,రాహుల్ నాన్న,dad@g.com,9876543210\nప్రియా,priya@s.com,10-B,ప్రియా అమ్మ,mom@g.com,9876543211\n\nNotes:\n• class_section: "10-A" format లో రాయండి\n• parent_email optional\n• CSV గా save చేయండి`,
-      [{ text: 'అర్థమైంది' }]
-    );
-  };
-
   return (
     <View style={styles.container}>
       <ResultModal
@@ -454,8 +484,12 @@ export default function BulkUploadScreen({ onBack }) {
             4. Students కి default password: <Text style={styles.bold}>Student@1234</Text>{'\n'}
             5. Parents కి default password: <Text style={styles.bold}>Parent@1234</Text>
           </Text>
-          <TouchableOpacity style={styles.templateBtn} onPress={showTemplate}>
-            <Text style={styles.templateBtnText}>📋 Template Format చూడు</Text>
+          <TouchableOpacity
+            style={styles.templateBtn}
+            onPress={handleDownloadTemplate}>
+            <Text style={styles.templateBtnText}>
+              📥 Template Download / Share చేయి
+            </Text>
           </TouchableOpacity>
         </View>
 
